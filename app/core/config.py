@@ -32,6 +32,23 @@ class GeneralConfig(BaseModel):
     COINMARKETCAP_API_KEY: str | None = None
     OPENEXCHANGERATES_CRON_KEY: str | None = None
 
+    # Shared secret for machine-only endpoints (the news refresh job). Sent as
+    # the X-Cron-Key header. Deliberately separate from API_KEY: the public key
+    # must never be able to trigger paid OpenAI work. Unset = endpoint disabled.
+    CRON_KEY: str | None = None
+
+    # OpenAI — powers the currency news insights
+    OPENAI_API_KEY: str | None = None
+    OPENAI_MODEL: str = Field(default="gpt-5-nano")
+    # Seconds between in-process news generation runs (default: once a day).
+    # Set to 0 to disable the in-process job and drive generation purely from an
+    # external cron hitting POST /news-history/refresh.
+    NEWS_INSIGHT_INTERVAL: int = Field(default=86400)
+    # How many days back each insight looks when measuring the move
+    NEWS_WINDOW_DAYS: int = Field(default=7)
+    # Seconds to wait on a single OpenAI call before giving up
+    NEWS_OPENAI_TIMEOUT: int = Field(default=180)
+
     WRITE_FILE_ON_S3: int = Field(default=60)
     FETCH_API_DATA: int = Field(default=60)
 

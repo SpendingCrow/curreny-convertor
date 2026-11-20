@@ -41,6 +41,9 @@ pycparser = "^2.22"
 
 # HTTP & Web
 aiohttp = "^3.11.18"
+
+# AI / news insights
+openai = "^1.109.1"
 aiohappyeyeballs = "^2.6.1"
 aiosignal = "^1.3.2"
 attrs = "^25.3.0"
@@ -103,6 +106,7 @@ vcrpy = ">=5.0.0,<6.0.0"
 faker = "^37.4.2"
 factory-boy = "^3.3.3"
 pytest-asyncio = "^1.1.0"
+aiosqlite = "^0.21.0"  # in-memory DB for the news trend tests
 
 [tool.isort]
 line_length = 119

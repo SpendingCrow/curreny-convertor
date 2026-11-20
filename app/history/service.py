@@ -7,6 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.currency.models import CurrencyRate
+from app.utils.performance import change_percent as _change_percent
 from .schema import (
     HistoryPoint,
     CurrencyHistoryResponse,
@@ -151,8 +152,11 @@ async def get_currency_history(
     raw_change = raw_current - raw_starting
     absolute_change = round(raw_change, rate_decimals)
 
-    if raw_starting:
-        raw_pct = (raw_change / raw_starting) * 100.0
+    # Percent maths is shared with the news module so the two can never drift;
+    # the significant-figure rounding below stays specific to this endpoint,
+    # where BTC pairs would otherwise collapse to 0.00.
+    raw_pct = _change_percent(raw_starting, raw_current)
+    if raw_pct is not None:
         percent_decimals = _auto_decimals(raw_pct, PERCENT_SIG_FIGURES)
         percent_change = round(raw_pct, percent_decimals)
     else:

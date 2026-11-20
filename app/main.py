@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from app.utils.logging_config import LOGGING_CONFIG
 from app.currency.routes import router as currency_router
 from app.history.routes import router as history_router
+from app.news.routes import router as news_router
+from app.news.service import run_daily_generation
 from app.core.config import env_var
 from app.services.slack_service import send_slack_alert
 from app.utils.rate_limit import RateLimitMiddleware
@@ -25,6 +27,7 @@ app = FastAPI(
 app.add_middleware(RateLimitMiddleware)
 app.include_router(currency_router)
 app.include_router(history_router)
+app.include_router(news_router)
 
 @app.on_event("startup")
 async def start_background_tasks():
@@ -88,9 +91,42 @@ async def start_background_tasks():
                 logger.error(f"Rate staleness check failed: {e}")
             await asyncio.sleep(3600)  # Check every hour
 
-    # Create both background tasks
+    async def periodic_news_insights():
+        """Fourth background task - generate currency news insights once a day.
+
+        Each currency is independent: one failure is logged and the rest carry
+        on. Already-generated currencies are skipped, so a restart costs nothing.
+
+        Set NEWS_INSIGHT_INTERVAL=0 to turn this off and drive generation purely
+        from an external scheduler hitting POST /news-history/refresh.
+        """
+        if env_var.NEWS_INSIGHT_INTERVAL <= 0:
+            logger.info(
+                "⏭️  NEWS_INSIGHT_INTERVAL=0 — in-process news generation "
+                "disabled; expecting an external cron to call "
+                "POST /news-history/refresh"
+            )
+            return
+
+        await asyncio.sleep(120)  # Initial delay — let the rate tasks settle first
+        while True:
+            try:
+                if not env_var.OPENAI_API_KEY:
+                    logger.warning(
+                        "⏭️  OPENAI_API_KEY not set — skipping news insight generation"
+                    )
+                else:
+                    async with async_session() as db:
+                        summary = await run_daily_generation(db)
+                    logger.info(f"✅ News insights generated: {summary}")
+            except Exception as e:
+                logger.error(f"❌ News insight generation failed: {e}")
+            await asyncio.sleep(env_var.NEWS_INSIGHT_INTERVAL)
+
+    # Start the background tasks
     asyncio.create_task(periodic_s3_upload())
     asyncio.create_task(periodic_currency_update())
     asyncio.create_task(periodic_rate_staleness_check())
+    asyncio.create_task(periodic_news_insights())
 
     logger.info("🚀 Background tasks started successfully")
