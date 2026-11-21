@@ -105,6 +105,8 @@ make help              # Show all available commands with descriptions
 - **Docker Development**: Containerized development environment
 - **Automated Testing**: Comprehensive test suite with coverage reporting
 - **Poetry Integration**: Modern Python dependency management
+- **Currency News Insights**: AI-generated, source-backed explanations of why each
+  currency moved against the dollar
 - **Environment-Aware**: Smart development/production configuration
 
 ## API Documentation
@@ -149,6 +151,143 @@ curl "http://localhost:8000/api/currencies"
 }
 ```
 
+### Currency News History
+
+Explains *why* each tracked asset moved against the US dollar. A daily background
+job measures the move from our own `currency_rates` table, asks OpenAI (with web
+search enabled) for the reason, validates the articles it cites, and stores the
+result. The endpoints only read the database, so no request ever waits on OpenAI.
+
+**Coverage — 19 assets, all against USD:**
+
+| Type | Codes |
+|---|---|
+| Fiat (12) | EUR, GBP, JPY, CNY, CAD, HKD, AUD, SGD, CHF, THB, SEK, PLN |
+| Crypto (5) | BTC, ETH, USDT, BNB, USDC |
+| Metals (2) | XAU (gold), XAG (silver) |
+
+USD also gets a daily commentary card, but no percentage — it is the base
+currency, so USD against USD is always zero.
+
+**Two endpoints**, split by what they cost.
+
+#### 1. `GET /news-history` — reading (header: `X-API-Key`)
+
+Free and fast; it only reads the database. One endpoint covers every read, and
+the response shape never changes: `items` and `groups` are mutually exclusive,
+so the payload is never sent twice.
+
+| Query | Returns |
+|---|---|
+| `GET /news-history` | every card, flat, in fixed order (fiat → crypto → metals → USD) |
+| `GET /news-history?group_by=category` | cards grouped for the news page, empty categories omitted |
+| `GET /news-history?currency_code=EUR` | one card, as a **one-element `items` list** |
+
+`days` (1–365, default 7) is accepted on all three.
+
+```bash
+# What the news page renders from
+curl -H "X-API-Key: $API_KEY" "http://localhost:8000/news-history?group_by=category"
+
+# A single currency
+curl -H "X-API-Key: $API_KEY" "http://localhost:8000/news-history?currency_code=EUR"
+```
+
+A single-currency request still returns a list, so the frontend reads
+`items[0]` and never needs a union type. It 404s if that currency has no card
+yet.
+
+#### 2. `POST /news-history/refresh` — generating (header: `X-Cron-Key`)
+
+**Scheduler only.** This is the only endpoint that calls OpenAI, so it costs
+money and takes 60–120 seconds per currency.
+
+It authenticates with `X-Cron-Key`, **not** `X-API-Key` — the key you ship to
+the frontend deliberately cannot trigger paid work. If `CRON_KEY` is unset the
+endpoint returns `503` and is unreachable; it never falls open.
+
+| Query | Behaviour |
+|---|---|
+| no `currency_code` | full daily batch, runs in the background, returns `202` immediately |
+| `currency_code=EUR` | regenerates that one card synchronously, returns `200` |
+
+```bash
+# Point your scheduler at this once a day
+curl -X POST -H "X-Cron-Key: $CRON_KEY" "http://localhost:8000/news-history/refresh"
+```
+
+The batch form returns `202` rather than waiting, because a full pass is ~20
+OpenAI calls and would outlive any sensible HTTP timeout. Check the server logs
+for the outcome.
+
+> By default the app also runs this generation in-process once a day. If you
+> drive it from an external scheduler instead, set `NEWS_INSIGHT_INTERVAL=0` to
+> turn the in-process job off. Running both is safe — already-generated cards
+> are skipped — but pointless.
+
+**Reading `change_percent`:**
+
+It is a plain 2-decimal number, already measured against USD. **Positive means the
+asset got stronger** against the dollar — render it green; negative means weaker —
+render it red. `null` means either the USD card or no reliable rate data, and the
+UI should show no percentage at all rather than a zero.
+
+> Rates are stored as "units per 1 USD" (crypto included — it is saved as
+> `1 / usd_price`), so a *rising* stored value means a *weaker* asset. Every
+> calculation inverts the rate first via `app/utils/performance.py`, which is the
+> single place percentage maths lives. Do not recompute percentages anywhere else.
+
+**Example response** (one card from `/news-history/feed`):
+
+```json
+{
+  "currency_code": "EUR",
+  "currency_name": "Euro",
+  "asset_type": "fiat",
+  "quote_currency": "USD",
+  "title": "Euro Faces Pressure Against a Stronger US Dollar",
+  "slug": "euro-faces-pressure-eur-2026-11-18",
+  "category": "Forex News",
+  "sentiment": "Bearish",
+  "related_assets": ["EUR", "USD"],
+  "image_url": null,
+  "short_summary": "The euro slipped as investors reassessed rate expectations.",
+  "long_summary": "Across the week ...",
+  "change_percent": -0.42,
+  "trend": "weaker",
+  "start_date": "2026-11-12",
+  "end_date": "2026-11-19",
+  "days": 7,
+  "start_rate": 1.0812,
+  "end_rate": 1.0767,
+  "summary_window_days": 7,
+  "insight_date": "2026-11-19",
+  "created_at": "2026-11-19T06:00:00Z",
+  "sources": [
+    {
+      "headline": "Euro slips as dollar firms on rate outlook",
+      "publisher": "Reuters",
+      "source_url": "https://www.reuters.com/markets/...",
+      "published_at": "2026-11-17T14:30:00Z"
+    }
+  ]
+}
+```
+
+**On trust:** `sources` can legitimately be empty. Every article the model returns
+is validated before it is stored — links that are not `http(s)`, duplicates, and
+articles published outside the window are dropped. If nothing survives, the card
+is saved without citations rather than with an invented link. Summaries are our
+own words; we never store a publisher's article body.
+
+**Categories:** `Forex News`, `Cryptocurrency News`, `Precious Metals News`,
+`Market Analysis`, `Economic News`, `Central Bank Updates`.
+
+**Window:** `days` controls the measured percentage. The written summaries are
+generated for `NEWS_WINDOW_DAYS` (7 by default) and the response reports that as
+`summary_window_days` — so if you request a different window, the numbers follow
+it while the text still describes the generated one.
+
 ## Configuration
 
 ### Environment Variables
@@ -181,8 +320,13 @@ POSTGRES_DATA_PATH=/path/to/your/databases/currency_convertor
 PGADMIN_DEFAULT_EMAIL=admin@example.com
 PGADMIN_DEFAULT_PASSWORD=your_pgadmin_password_here
 
-# Internal API Key
+# Internal API Key — reading the API (X-API-Key header)
 API_KEY=your_internal_api_key_here
+
+# Cron secret — generating news insights (X-Cron-Key header). Keep this OUT of
+# any frontend bundle: it is the only key that can spend OpenAI credit.
+# Leave unset to disable POST /news-history/refresh entirely.
+CRON_KEY=your_secure_cron_key_here
 
 # Open Exchange Rates API
 OPENEXCHANGERATES_API_KEY=your_openexchangerates_api_key_here
@@ -198,6 +342,13 @@ DO_SPACES_KEY=your_do_spaces_key_here
 DO_SPACES_SECRET=your_do_spaces_secret_here
 DO_SPACES_BUCKET=your_bucket_name
 DO_SPACES_CDN_URL=https://your-region.digitaloceanspaces.com/your_bucket_name
+
+# OpenAI (currency news insights)
+OPENAI_API_KEY=sk-your_openai_key          # required for /news-history
+OPENAI_MODEL=gpt-5-nano                    # must support web search
+NEWS_WINDOW_DAYS=7                         # days each insight measures
+NEWS_INSIGHT_INTERVAL=86400                # seconds between in-process runs; 0 = off
+NEWS_OPENAI_TIMEOUT=180                    # seconds per OpenAI call (calls take 60-120s)
 
 # Job Intervals (in minutes)
 WRITE_FILE_ON_S3=60

@@ -79,7 +79,26 @@ alembic/versions/__pycache__/
 
 # Logs
 logs/
+*.log
+
+# Local Postgres data directory — POSTGRES_DATA_PATH in .env points here, so
+# the running database lives inside the repo. Never commit it: it is tens of MB
+# of binary server state, it churns on every write, and it would leak whatever
+# rows the local DB happens to hold.
+postgres_data/
+pgdata/
+
+# pgAdmin local state
+pgadmin_data/
+
+# Saved API response dumps (scratch output from Swagger / curl)
+docs/
+
+# Ruff / tooling caches
+.ruff_cache/
+
+# OS cruft
+Thumbs.db
 
 # Claude Code
-CLAUDE.md
 CLAUDE.md
