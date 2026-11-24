@@ -237,7 +237,7 @@ UI should show no percentage at all rather than a zero.
 > calculation inverts the rate first via `app/utils/performance.py`, which is the
 > single place percentage maths lives. Do not recompute percentages anywhere else.
 
-**Example response** (one card from `/news-history/feed`):
+**Example response** (one card from `GET /news-history`):
 
 ```json
 {
@@ -246,11 +246,8 @@ UI should show no percentage at all rather than a zero.
   "asset_type": "fiat",
   "quote_currency": "USD",
   "title": "Euro Faces Pressure Against a Stronger US Dollar",
-  "slug": "euro-faces-pressure-eur-2026-11-18",
   "category": "Forex News",
   "sentiment": "Bearish",
-  "related_assets": ["EUR", "USD"],
-  "image_url": null,
   "short_summary": "The euro slipped as investors reassessed rate expectations.",
   "long_summary": "Across the week ...",
   "change_percent": -0.42,

@@ -8,9 +8,7 @@ Split of responsibility:
 """
 
 import logging
-import re
-import unicodedata
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
@@ -48,16 +46,6 @@ def _now() -> datetime:
 def _window(days: int, end: datetime | None = None) -> tuple[datetime, datetime]:
     window_end = end or _now()
     return window_end - timedelta(days=days), window_end
-
-
-def slugify(title: str, code: str, insight_date: date) -> str:
-    """URL-safe id. Includes code and date, so it is unique by construction."""
-    normalised = unicodedata.normalize("NFKD", title or "")
-    ascii_only = normalised.encode("ascii", "ignore").decode("ascii").lower()
-    words = re.sub(r"[^a-z0-9]+", "-", ascii_only).strip("-")
-    # Leave room for the suffix inside the column's 255 chars.
-    words = "-".join(words.split("-")[:10])[:200] or "insight"
-    return f"{words}-{code.lower()}-{insight_date.isoformat()}"
 
 
 # --------------------------------------------------------------------------
@@ -118,11 +106,8 @@ async def generate_and_store(
         insight_date=insight_date,
         change_percent=result.change_percent,
         title=draft.title,
-        slug=slugify(draft.title, code, insight_date),
         category=draft.category,
         sentiment=draft.sentiment,
-        related_assets=",".join(draft.related_assets) or None,
-        image_url=None,
         short_summary=draft.short_summary,
         long_summary=draft.long_summary,
     )
@@ -210,23 +195,14 @@ async def _to_out(
     result = await compute_trend(db, insight.currency_code, window_start, window_end)
     name, asset_type = get_meta(insight.currency_code)
 
-    related = [
-        part.strip()
-        for part in (insight.related_assets or "").split(",")
-        if part.strip()
-    ]
-
     return NewsInsightOut(
         currency_code=insight.currency_code,
         currency_name=name,
         asset_type=asset_type.value,
         quote_currency=BASE_CURRENCY,
         title=insight.title,
-        slug=insight.slug,
         category=insight.category,
         sentiment=insight.sentiment,
-        related_assets=related,
-        image_url=insight.image_url,
         short_summary=insight.short_summary,
         long_summary=insight.long_summary,
         change_percent=result.change_percent,

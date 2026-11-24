@@ -19,7 +19,6 @@ class NewsInsightOut(BaseModel):
     quote_currency: str = Field("USD", description="Everything is measured against USD")
 
     title: str = Field(..., description="Card headline")
-    slug: str = Field(..., description="URL-safe identifier for the card")
     category: str = Field(..., description="Feed category, e.g. 'Forex News'")
     sentiment: str = Field(
         ...,
@@ -30,11 +29,6 @@ class NewsInsightOut(BaseModel):
             "fact."
         ),
     )
-    related_assets: list[str] = Field(
-        default_factory=list, description="Asset codes this story touches"
-    )
-    image_url: str | None = Field(None, description="Currently always null")
-
     short_summary: str = Field(..., description="1-2 sentence card blurb")
     long_summary: str = Field(..., description="Full write-up, our own words")
 

@@ -33,7 +33,6 @@ BACKOFF_SECONDS = (2, 8)
 PUBLISH_DATE_SLACK = timedelta(days=2)
 
 MAX_SOURCES = 6
-MAX_RELATED_ASSETS = 4
 
 _ALLOWED_CATEGORIES = {c.value for c in Category}
 _ALLOWED_SENTIMENTS = {s.value for s in Sentiment}
@@ -46,11 +45,6 @@ RESPONSE_SCHEMA = {
         "sentiment": {"type": "string", "enum": sorted(_ALLOWED_SENTIMENTS)},
         "short_summary": {"type": "string", "description": "1-2 sentences, max 40 words"},
         "long_summary": {"type": "string", "description": "2-4 short paragraphs"},
-        "related_assets": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Uppercase asset codes the story touches",
-        },
         "sources": {
             "type": "array",
             "description": "Only articles actually retrieved via web search. May be empty.",
@@ -76,7 +70,6 @@ RESPONSE_SCHEMA = {
         "sentiment",
         "short_summary",
         "long_summary",
-        "related_assets",
         "sources",
     ],
     "additionalProperties": False,
@@ -102,7 +95,6 @@ class InsightDraft:
     sentiment: str
     short_summary: str
     long_summary: str
-    related_assets: list[str] = field(default_factory=list)
     sources: list[SourceDraft] = field(default_factory=list)
     dropped_sources: int = 0
 
@@ -220,18 +212,6 @@ def _validate_payload(payload: dict, result, window_start, window_end) -> Insigh
         # Fall back to what we measured ourselves.
         sentiment = result.sentiment.value
 
-    related = payload.get("related_assets")
-    related_assets: list[str] = []
-    if isinstance(related, list):
-        for code in related:
-            if isinstance(code, str) and code.strip():
-                cleaned = code.strip().upper()[:12]
-                if cleaned not in related_assets:
-                    related_assets.append(cleaned)
-    if result.currency_code not in related_assets:
-        related_assets.insert(0, result.currency_code)
-    related_assets = related_assets[:MAX_RELATED_ASSETS]
-
     sources, dropped = _validate_sources(
         payload.get("sources"), window_start, window_end
     )
@@ -246,7 +226,6 @@ def _validate_payload(payload: dict, result, window_start, window_end) -> Insigh
         sentiment=sentiment,
         short_summary=short_summary,
         long_summary=long_summary,
-        related_assets=related_assets,
         sources=sources,
         dropped_sources=dropped,
     )

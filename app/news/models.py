@@ -36,11 +36,8 @@ class CurrencyInsight(Base):
 
     # Card fields
     title = Column(Text, nullable=False)
-    slug = Column(String(255), nullable=False, unique=True)
     category = Column(String(50), nullable=False)
     sentiment = Column(String(20), nullable=False)
-    related_assets = Column(String(255), nullable=True)
-    image_url = Column(Text, nullable=True)
 
     short_summary = Column(Text, nullable=False)
     long_summary = Column(Text, nullable=False)

@@ -35,7 +35,6 @@ runs. Example: "Euro Faces Pressure Against a Stronger US Dollar".
 - "long_summary": 2-4 short paragraphs explaining the drivers and what to watch next.
 - "category": exactly one of {ALLOWED_CATEGORIES}.
 - "sentiment": exactly one of {ALLOWED_SENTIMENTS}, from the asset's point of view.
-- "related_assets": 1-4 uppercase codes that the story touches, e.g. ["XAU", "USD"].
 - Write for a general reader. No jargon without a plain-English gloss.
 """
 

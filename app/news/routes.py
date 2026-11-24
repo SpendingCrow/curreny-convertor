@@ -218,6 +218,13 @@ async def _run_batch_in_background(days: int) -> None:
         400: {"model": NewsErrorDetail, "description": "Unsupported currency"},
         401: {"model": NewsErrorDetail, "description": "Invalid cron key"},
         422: {"description": "X-Cron-Key header missing"},
+        500: {
+            "model": NewsErrorDetail,
+            "description": (
+                "Unexpected failure (database or bug). The detail names the "
+                "exception; the traceback is in the server logs."
+            ),
+        },
         503: {
             "model": NewsErrorDetail,
             "description": "CRON_KEY not configured, or generation failed",
@@ -261,6 +268,21 @@ async def refresh_news(
         raise HTTPException(status_code=400, detail=str(exc))
     except InsightGenerationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        # Anything reaching here is a bug or an infrastructure fault, not a bad
+        # request: the OpenAI path already converts its own failures into
+        # InsightGenerationError. FastAPI would return a bare 500 with an empty
+        # body, which tells the caller nothing and leaves the cause only in the
+        # logs. Name the failure in the response and keep the traceback.
+        await db.rollback()
+        logger.exception("Unexpected failure generating the %s insight", code)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Unexpected {type(exc).__name__} while generating the {code} "
+                f"insight: {exc}"
+            ),
+        )
 
     return NewsRefreshResponse(
         status="completed",
