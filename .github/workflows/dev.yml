@@ -43,9 +43,44 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            # Write the secret content using base64 to avoid character escaping issues
-            echo '${{ secrets.ENV }}' | tr -d '\r' > /home/qaiser/projects/currency_converter/.env
-      
+            set -eu
+            cd /home/qaiser/projects/currency_converter
+
+            # ENV holds the long-standing base config (database, S3, rate APIs).
+            echo '${{ secrets.ENV }}' | tr -d '\r' > .env.base
+
+            # The news settings live in their own repository secrets so one value
+            # can be rotated without rewriting the whole ENV blob. Strip any stale
+            # copy out of the base file first: that way each key appears exactly
+            # once and we never depend on which duplicate the parser prefers.
+            grep -vE '^(OPENAI_API_KEY|OPENAI_MODEL|CRON_KEY|NEWS_WINDOW_DAYS|NEWS_INSIGHT_INTERVAL|NEWS_OPENAI_TIMEOUT)=' .env.base > .env || true
+            rm -f .env.base
+
+            # Append only the secrets that are actually set. An empty value here
+            # would be worse than a missing one: the int fields would fail to
+            # parse and the app would not boot, whereas an absent key falls back
+            # to the default in app/core/config.py.
+            append_if_set() {
+              if [ -n "$2" ]; then
+                printf '%s=%s\n' "$1" "$2" >> .env
+              else
+                echo "WARNING: $1 is empty — falling back to the default in app/core/config.py"
+              fi
+            }
+
+            append_if_set OPENAI_API_KEY        '${{ secrets.OPENAI_API_KEY }}'
+            append_if_set OPENAI_MODEL          '${{ secrets.OPENAI_MODEL }}'
+            append_if_set CRON_KEY              '${{ secrets.CRON_KEY }}'
+            append_if_set NEWS_WINDOW_DAYS      '${{ secrets.NEWS_WINDOW_DAYS }}'
+            append_if_set NEWS_INSIGHT_INTERVAL '${{ secrets.NEWS_INSIGHT_INTERVAL }}'
+            append_if_set NEWS_OPENAI_TIMEOUT   '${{ secrets.NEWS_OPENAI_TIMEOUT }}'
+
+            # Names only — never the values.
+            echo "Keys written to .env:"
+            grep -oE '^[A-Za-z_][A-Za-z0-9_]*' .env | sort | tr '\n' ' '
+            echo
+
+
       - name: 🐳 Run Docker + Alembic on Server
         uses: appleboy/ssh-action@master
         with:
