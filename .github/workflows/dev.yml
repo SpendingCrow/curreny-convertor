@@ -87,9 +87,23 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
+          command_timeout: 30m
           script: |
+            set -eu
             cd /home/qaiser/projects/currency_converter
             docker compose down
-            docker compose up -d
+
+            # --build is required, not optional. The compose file mounts the repo
+            # at /app, so application code updates on every deploy without a
+            # rebuild — but Python packages live in the image. Without --build a
+            # newly added dependency is never installed, and the new code fails
+            # at import time against last year's site-packages. That is exactly
+            # how `openai` went missing in production.
+            docker compose up -d --build
+
             sleep 15
             docker compose exec -T currency_convertor alembic upgrade head
+
+            # Fail the deploy if a dependency did not make it into the image,
+            # rather than leaving it to show up as a 503 from the news endpoint.
+            docker compose exec -T currency_convertor python -c "import openai; print('openai', openai.__version__, 'OK')"
