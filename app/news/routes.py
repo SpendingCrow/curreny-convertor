@@ -26,6 +26,7 @@ from app.utils.security import verify_api_key, verify_cron_key
 
 from .constants import ALL_SUBJECTS
 from .openai_client import InsightGenerationError
+from .prompts import PROMPT_VERSION
 from .schema import (
     NewsErrorDetail,
     NewsRefreshResponse,
@@ -248,8 +249,8 @@ async def refresh_news(
     _: str = Depends(verify_cron_key),
 ):
     if currency_code is None:
-        # Fire and forget: a full pass is ~20 OpenAI calls and will outlive any
-        # sensible HTTP timeout.
+        # Fire and forget: a full pass is one OpenAI call per subject and will
+        # outlive any sensible HTTP timeout.
         asyncio.create_task(_run_batch_in_background(days))
         response.status_code = status.HTTP_202_ACCEPTED
         return NewsRefreshResponse(
@@ -259,11 +260,12 @@ async def refresh_news(
                 "subjects. Check the server logs for the result."
             ),
             days=days,
+            prompt_version=PROMPT_VERSION,
         )
 
     code = currency_code.strip().upper()
     try:
-        await generate_and_store(db, code, days=days, force=True)
+        _, generated = await generate_and_store(db, code, days=days, force=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except InsightGenerationError as exc:
@@ -286,10 +288,18 @@ async def refresh_news(
 
     return NewsRefreshResponse(
         status="completed",
-        detail=f"Regenerated the {code} insight.",
+        detail=(
+            f"Regenerated the {code} insight with prompt v{PROMPT_VERSION}."
+            if generated
+            else (
+                f"Kept the stored {code} insight: another generation run wrote "
+                "it while this one was waiting on OpenAI."
+            )
+        ),
         days=days,
+        prompt_version=PROMPT_VERSION,
         currency_code=code,
-        created=1,
-        skipped=0,
+        created=1 if generated else 0,
+        skipped=0 if generated else 1,
         failed=[],
     )

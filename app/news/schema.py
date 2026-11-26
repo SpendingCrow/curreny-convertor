@@ -4,6 +4,14 @@ from pydantic import BaseModel, Field
 
 
 class NewsSourceOut(BaseModel):
+    source_number: int | None = Field(
+        None,
+        description=(
+            "1-based citation number matching the [n] markers in the "
+            "summaries. Null on insights generated before the markers "
+            "existed. Sources are returned in this order."
+        ),
+    )
     headline: str = Field(..., description="Title of the real article we are citing")
     publisher: str | None = Field(None, description="Publisher name, e.g. Reuters")
     source_url: str = Field(..., description="Link to the original article")
@@ -17,6 +25,16 @@ class NewsInsightOut(BaseModel):
     currency_name: str = Field(..., description="Display name, e.g. Euro")
     asset_type: str = Field(..., description="fiat, crypto, or metal")
     quote_currency: str = Field("USD", description="Everything is measured against USD")
+
+    prompt_version: int = Field(
+        ...,
+        description=(
+            "Which revision of the generation prompt wrote this card's text. "
+            "Internal tracking: it lets a change in wording or source quality "
+            "be attributed to a prompt change rather than guessed at. Rows "
+            "generated before this was tracked report 1."
+        ),
+    )
 
     title: str = Field(..., description="Card headline")
     category: str = Field(..., description="Feed category, e.g. 'Forex News'")
@@ -133,6 +151,13 @@ class NewsRefreshResponse(BaseModel):
     )
     detail: str = Field(..., description="Human-readable outcome")
     days: int = Field(..., description="Window the insights were generated for")
+    prompt_version: int = Field(
+        ...,
+        description=(
+            "The prompt revision this run generated with — the value stored on "
+            "every row it wrote."
+        ),
+    )
     currency_code: str | None = Field(
         None, description="Set when a single currency was regenerated"
     )

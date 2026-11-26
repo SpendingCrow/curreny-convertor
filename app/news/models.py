@@ -6,6 +6,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -42,6 +43,15 @@ class CurrencyInsight(Base):
     short_summary = Column(Text, nullable=False)
     long_summary = Column(Text, nullable=False)
 
+    # Which revision of app/news/prompts.py wrote this row. For our own
+    # tracking only: no query filters on it and no code branches on it, but it
+    # is what lets a change in output quality be traced to a prompt change.
+    # SMALLINT because a version number will never need more than three
+    # digits. Rows that predate the column read as 1.
+    prompt_version = Column(
+        SmallInteger, nullable=False, server_default="1", default=1
+    )
+
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -51,7 +61,9 @@ class CurrencyInsight(Base):
         back_populates="insight",
         cascade="all, delete-orphan",
         passive_deletes=True,
-        order_by="NewsSource.published_at.desc()",
+        # The summaries cite sources as [1], [2], so display order has to be
+        # the model's own numbering, not the publication date.
+        order_by="NewsSource.source_number.asc(), NewsSource.id.asc()",
         lazy="selectin",
     )
 
@@ -77,6 +89,10 @@ class NewsSource(Base):
         nullable=False,
         index=True,
     )
+
+    # 1-based, matching the [n] markers in the insight's summaries. Nullable
+    # for rows written before the markers existed.
+    source_number = Column(Integer, nullable=True)
 
     headline = Column(Text, nullable=False)
     publisher = Column(String(255), nullable=True)

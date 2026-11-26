@@ -158,16 +158,22 @@ job measures the move from our own `currency_rates` table, asks OpenAI (with web
 search enabled) for the reason, validates the articles it cites, and stores the
 result. The endpoints only read the database, so no request ever waits on OpenAI.
 
-**Coverage — 19 assets, all against USD:**
+**Coverage — phase one, 12 assets plus USD, all against USD:**
 
-| Type | Codes |
-|---|---|
-| Fiat (12) | EUR, GBP, JPY, CNY, CAD, HKD, AUD, SGD, CHF, THB, SEK, PLN |
-| Crypto (5) | BTC, ETH, USDT, BNB, USDC |
-| Metals (2) | XAU (gold), XAG (silver) |
+| Type | Codes | Quoted as |
+|---|---|---|
+| Fiat (7) | EUR, GBP, JPY, CHF, CAD, AUD, CNY | USD per 1 unit |
+| Crypto (3) | BTC, ETH, BNB | USD per 1 coin |
+| Metals (2) | XAU (gold), XAG (silver) | USD per troy ounce |
 
 USD also gets a daily commentary card, but no percentage — it is the base
-currency, so USD against USD is always zero.
+currency, so USD against USD is always zero. Its card is written against the
+US Dollar Index (DXY) or major pairs instead.
+
+The set is declared in one place, `ASSETS` in `app/news/constants.py`. Adding an
+asset is a single line there — the tracked list, the supported-code check, the
+feed order and the daily job all derive from it — provided the code already has
+a column on `currency_rates`.
 
 **Two endpoints**, split by what they cost.
 
@@ -248,8 +254,8 @@ UI should show no percentage at all rather than a zero.
   "title": "Euro Faces Pressure Against a Stronger US Dollar",
   "category": "Forex News",
   "sentiment": "Bearish",
-  "short_summary": "The euro slipped as investors reassessed rate expectations.",
-  "long_summary": "Across the week ...",
+  "short_summary": "The euro slipped 0.42% against the dollar after the ECB signalled a slower path on rates [1].",
+  "long_summary": "Across the week ... [1][2]",
   "change_percent": -0.42,
   "trend": "weaker",
   "start_date": "2026-11-12",
@@ -262,6 +268,7 @@ UI should show no percentage at all rather than a zero.
   "created_at": "2026-11-19T06:00:00Z",
   "sources": [
     {
+      "source_number": 1,
       "headline": "Euro slips as dollar firms on rate outlook",
       "publisher": "Reuters",
       "source_url": "https://www.reuters.com/markets/...",
@@ -273,9 +280,23 @@ UI should show no percentage at all rather than a zero.
 
 **On trust:** `sources` can legitimately be empty. Every article the model returns
 is validated before it is stored — links that are not `http(s)`, duplicates, and
-articles published outside the window are dropped. If nothing survives, the card
-is saved without citations rather than with an invented link. Summaries are our
-own words; we never store a publisher's article body.
+articles published more than 14 days before the cutoff (or after it) are dropped.
+If nothing survives, the card is saved without citations rather than with an
+invented link. Summaries are our own words; we never store a publisher's article
+body. When no reporting explains a move, the summary says so ("No clear driver
+was identified in the available reporting") instead of guessing.
+
+**Citations:** summaries carry `[1]`-style markers that match `source_number`, and
+`sources` is returned in that order. A marker can point at a source that failed
+validation and was dropped — a dangling marker is preferable to renumbering text
+we did not write. `source_number` is `null` on insights generated before this
+existed; those fall back to insertion order.
+
+**What summaries never contain:** forecasts, price targets, trading advice,
+support/resistance levels, or a "what to watch next" section. A small move is not
+described as quiet trading, thin liquidity or a narrow range unless reporting
+says so — the prompt in `app/news/prompts.py` forbids filling the gap with
+"holiday trading" or "investors waiting".
 
 **Categories:** `Forex News`, `Cryptocurrency News`, `Precious Metals News`,
 `Market Analysis`, `Economic News`, `Central Bank Updates`.

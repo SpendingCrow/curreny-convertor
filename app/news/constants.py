@@ -1,9 +1,17 @@
-"""The currencies we generate news insights for, and the feed categories.
+"""The assets we generate news insights for, and the feed categories.
 
-Every code here is already a column on `currency_rates`, so adding or removing
-one needs no migration and no change to the rate-fetching pipeline.
+Phase one covers 12 assets plus USD. Everything downstream is derived from the
+`ASSETS` tuple below, so adding an asset is one line here and nothing else:
+
+    Asset("NZD", "New Zealand Dollar", AssetType.FIAT),
+
+The code must already be a column on `currency_rates` — every code here is, so
+adding one needs no migration and no change to the rate-fetching pipeline.
+Check `app/currency/models.py` before adding a code that is not in that table;
+a missing column means `compute_trend` finds no data and the asset is skipped.
 """
 
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -32,44 +40,90 @@ class Sentiment(str, Enum):
 # percentage — USD against USD is always zero, so a number there would be noise.
 BASE_CURRENCY = "USD"
 
-# code -> (display name, asset type)
-CURRENCY_META: dict[str, tuple[str, AssetType]] = {
-    # --- Fiat (12) ---
-    "EUR": ("Euro", AssetType.FIAT),
-    "GBP": ("British Pound", AssetType.FIAT),
-    "JPY": ("Japanese Yen", AssetType.FIAT),
-    "CNY": ("Chinese Yuan", AssetType.FIAT),
-    "CAD": ("Canadian Dollar", AssetType.FIAT),
-    "HKD": ("Hong Kong Dollar", AssetType.FIAT),
-    "AUD": ("Australian Dollar", AssetType.FIAT),
-    "SGD": ("Singapore Dollar", AssetType.FIAT),
-    "CHF": ("Swiss Franc", AssetType.FIAT),
-    "THB": ("Thai Baht", AssetType.FIAT),
-    "SEK": ("Swedish Krona", AssetType.FIAT),
-    "PLN": ("Polish Zloty", AssetType.FIAT),
-    # --- Crypto (5) ---
-    "BTC": ("Bitcoin", AssetType.CRYPTO),
-    "ETH": ("Ethereum", AssetType.CRYPTO),
-    "USDT": ("Tether", AssetType.CRYPTO),
-    "BNB": ("BNB", AssetType.CRYPTO),
-    "USDC": ("USD Coin", AssetType.CRYPTO),
-    # --- Metals (2) ---
-    "XAU": ("Gold", AssetType.METAL),
-    "XAG": ("Silver", AssetType.METAL),
-}
 
-# The 19 currencies that get a measured percentage.
-TRACKED_CURRENCIES: tuple[str, ...] = tuple(CURRENCY_META.keys())
+@dataclass(frozen=True)
+class Asset:
+    """One tracked asset, and everything the generator needs to know about it."""
 
-# USD is covered too, but with no percentage — hence a separate list.
-USD_META: tuple[str, AssetType] = ("US Dollar", AssetType.FIAT)
+    code: str
+    name: str
+    asset_type: AssetType
 
-# Everything the daily job generates an article for: the 19 plus USD.
+    # What the move is measured against, phrased for the prompt. "USD" for
+    # everything we measure a percentage for; USD itself has no self-comparison
+    # and uses a basket instead.
+    benchmark: str = "USD"
+
+    # The unit one quote covers, where "1 unit" is not self-evident. Metals are
+    # priced per troy ounce; a currency or a coin is just one of itself, so it
+    # stays None.
+    unit: str | None = None
+
+    # True for a currency or token that is pegged to USD by design, so a ~0%
+    # move is the expected result rather than a market signal. Nothing in phase
+    # one is pegged; set it on a stablecoin (e.g. USDT, USDC) when one is added
+    # and the prompt picks up the peg note automatically.
+    pegged_to_usd: bool = False
+
+
+# --------------------------------------------------------------------------
+# The registry — phase one
+# --------------------------------------------------------------------------
+# Declaration order is feed order: fiat, then crypto, then metals, with USD
+# appended last. Keep the grouping if you add to it, because `GET /news-history`
+# returns cards in exactly this order.
+ASSETS: tuple[Asset, ...] = (
+    # --- Fiat (7) ---
+    Asset("EUR", "Euro", AssetType.FIAT),
+    Asset("GBP", "British Pound", AssetType.FIAT),
+    Asset("JPY", "Japanese Yen", AssetType.FIAT),
+    Asset("CHF", "Swiss Franc", AssetType.FIAT),
+    Asset("CAD", "Canadian Dollar", AssetType.FIAT),
+    Asset("AUD", "Australian Dollar", AssetType.FIAT),
+    Asset("CNY", "Chinese Yuan", AssetType.FIAT),
+    # --- Crypto (3) ---
+    Asset("BTC", "Bitcoin", AssetType.CRYPTO),
+    Asset("ETH", "Ethereum", AssetType.CRYPTO),
+    Asset("BNB", "BNB", AssetType.CRYPTO),
+    # --- Precious metals (2) ---
+    Asset("XAU", "Gold", AssetType.METAL, unit="troy ounce"),
+    Asset("XAG", "Silver", AssetType.METAL, unit="troy ounce"),
+)
+
+# USD is handled apart from the rest: it gets a commentary card with no
+# percentage, so it is compared against a basket rather than against itself.
+USD_ASSET = Asset(
+    BASE_CURRENCY,
+    "US Dollar",
+    AssetType.FIAT,
+    benchmark="the US Dollar Index (DXY)",
+)
+
+
+# --------------------------------------------------------------------------
+# Everything below is derived — do not edit these by hand
+# --------------------------------------------------------------------------
+
+# Codes that get a measured percentage.
+TRACKED_CURRENCIES: tuple[str, ...] = tuple(a.code for a in ASSETS)
+
+# Everything the daily job generates an article for: the tracked set plus USD.
 ALL_SUBJECTS: tuple[str, ...] = TRACKED_CURRENCIES + (BASE_CURRENCY,)
 
-# Stablecoins are pegged to USD by design, so a ~0% move is the expected result
-# rather than a data problem. Used to phrase their prompt honestly.
-PEGGED_TO_USD: frozenset[str] = frozenset({"USDT", "USDC"})
+_BY_CODE: dict[str, Asset] = {a.code: a for a in ASSETS}
+_BY_CODE[BASE_CURRENCY] = USD_ASSET
+
+# code -> (display name, asset type). Kept for callers that only need the pair.
+CURRENCY_META: dict[str, tuple[str, AssetType]] = {
+    a.code: (a.name, a.asset_type) for a in ASSETS
+}
+
+USD_META: tuple[str, AssetType] = (USD_ASSET.name, USD_ASSET.asset_type)
+
+# Empty in phase one. Derived, so adding a pegged asset to ASSETS is enough.
+PEGGED_TO_USD: frozenset[str] = frozenset(
+    a.code for a in ASSETS if a.pegged_to_usd
+)
 
 # Default feed category per asset type. The model may pick a more specific
 # category from `Category`; anything outside it falls back to these.
@@ -90,13 +144,16 @@ CATEGORY_ORDER: tuple[Category, ...] = (
 )
 
 
+def get_asset(code: str) -> Asset | None:
+    """The full Asset for a code (USD included), or None if we don't track it."""
+    return _BY_CODE.get((code or "").upper())
+
+
 def get_meta(code: str) -> tuple[str, AssetType] | None:
     """Display name and asset type for a code, or None if we don't track it."""
-    code = (code or "").upper()
-    if code == BASE_CURRENCY:
-        return USD_META
-    return CURRENCY_META.get(code)
+    asset = get_asset(code)
+    return (asset.name, asset.asset_type) if asset else None
 
 
 def is_supported(code: str) -> bool:
-    return get_meta(code) is not None
+    return get_asset(code) is not None

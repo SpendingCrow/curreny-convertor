@@ -9,6 +9,11 @@ Three layers keep the output honest:
 
 If nothing survives validation we save the insight with zero sources. We never
 invent a link to make a card look complete.
+
+The summaries carry [1]-style markers, so source order matters: we keep the
+model's own `source_number` ordering and store it, rather than re-sorting by
+date. A marker pointing at a source we dropped is left dangling — a wrong link
+is worse than a missing one.
 """
 
 import asyncio
@@ -27,10 +32,15 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 8)
 
-# An article dated a little outside the window can still be the reason for a
-# move (reporting lags, timezones), but anything further out is not about this
-# window and gets dropped.
-PUBLISH_DATE_SLACK = timedelta(days=2)
+# The prompt lets the model search 14 days back from the cutoff: the 7-day
+# performance window plus the week before it as background. Anything older is
+# not about this window and gets dropped. Kept in sync with
+# prompts.NEWS_LOOKBACK_DAYS.
+NEWS_LOOKBACK_DAYS = timedelta(days=14)
+
+# Published-after-the-cutoff tolerance. Publishers date articles in their own
+# timezone, so a few hours of overhang is normal; a day of it is not.
+PUBLISH_DATE_SLACK = timedelta(days=1)
 
 MAX_SOURCES = 6
 
@@ -40,17 +50,30 @@ _ALLOWED_SENTIMENTS = {s.value for s in Sentiment}
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
+        # Echoed back only so a mixed-up response is detectable; we store our
+        # own code, never this one.
+        "currency_code": {
+            "type": "string",
+            "description": "The code supplied in the prompt, echoed back",
+        },
         "title": {"type": "string", "description": "News-style headline, 6-12 words"},
         "category": {"type": "string", "enum": sorted(_ALLOWED_CATEGORIES)},
         "sentiment": {"type": "string", "enum": sorted(_ALLOWED_SENTIMENTS)},
         "short_summary": {"type": "string", "description": "1-2 sentences, max 40 words"},
         "long_summary": {"type": "string", "description": "2-4 short paragraphs"},
-        "sources": {
+        "news_sources": {
             "type": "array",
-            "description": "Only articles actually retrieved via web search. May be empty.",
+            "description": (
+                "Only articles actually retrieved via web search, and only "
+                "those actually cited in the summaries. May be empty."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
+                    "source_number": {
+                        "type": "integer",
+                        "description": "1-based; matches the [n] markers in the summaries",
+                    },
                     "headline": {"type": "string"},
                     "publisher": {"type": "string"},
                     "source_url": {"type": "string"},
@@ -59,18 +82,25 @@ RESPONSE_SCHEMA = {
                         "description": "ISO 8601 date or datetime",
                     },
                 },
-                "required": ["headline", "publisher", "source_url", "published_at"],
+                "required": [
+                    "source_number",
+                    "headline",
+                    "publisher",
+                    "source_url",
+                    "published_at",
+                ],
                 "additionalProperties": False,
             },
         },
     },
     "required": [
+        "currency_code",
         "title",
         "category",
         "sentiment",
         "short_summary",
         "long_summary",
-        "sources",
+        "news_sources",
     ],
     "additionalProperties": False,
 }
@@ -82,6 +112,7 @@ class InsightGenerationError(RuntimeError):
 
 @dataclass
 class SourceDraft:
+    source_number: int
     headline: str
     publisher: str | None
     source_url: str
@@ -148,10 +179,12 @@ def _validate_sources(
     if not isinstance(raw_sources, list):
         return [], 0
 
-    earliest = window_start - PUBLISH_DATE_SLACK
+    # window_start is only the performance window; the model is allowed to cite
+    # background reporting from the week before it.
+    earliest = min(window_start, window_end - NEWS_LOOKBACK_DAYS)
     latest = window_end + PUBLISH_DATE_SLACK
 
-    for item in raw_sources:
+    for position, item in enumerate(raw_sources, start=1):
         if not isinstance(item, dict):
             dropped += 1
             continue
@@ -178,8 +211,14 @@ def _validate_sources(
 
         seen_urls.add(normalised)
         publisher = (item.get("publisher") or "").strip() or None
+        number = item.get("source_number")
+        if not isinstance(number, int) or number < 1:
+            # The [n] markers in the text are what matter; fall back to the
+            # position in the array, which is the order they were written in.
+            number = position
         kept.append(
             SourceDraft(
+                source_number=number,
                 headline=headline[:500],
                 publisher=publisher[:255] if publisher else None,
                 source_url=url,
@@ -189,11 +228,22 @@ def _validate_sources(
         if len(kept) >= MAX_SOURCES:
             break
 
+    # Keep the model's numbering order so [1] is the first source shown.
+    kept.sort(key=lambda s: s.source_number)
     return kept, dropped
 
 
 def _validate_payload(payload: dict, result, window_start, window_end) -> InsightDraft:
     """Coerce the model's JSON into something safe to store."""
+    echoed = (payload.get("currency_code") or "").strip().upper()
+    if echoed and echoed != result.currency_code.upper():
+        # Not fatal — we file it under the code we asked about either way — but
+        # it means the model drifted off the subject, so it is worth seeing.
+        logger.warning(
+            "Asked about %s but the model echoed %s",
+            result.currency_code, echoed,
+        )
+
     title = (payload.get("title") or "").strip()
     short_summary = (payload.get("short_summary") or "").strip()
     long_summary = (payload.get("long_summary") or "").strip()
@@ -212,9 +262,11 @@ def _validate_payload(payload: dict, result, window_start, window_end) -> Insigh
         # Fall back to what we measured ourselves.
         sentiment = result.sentiment.value
 
-    sources, dropped = _validate_sources(
-        payload.get("sources"), window_start, window_end
-    )
+    # `sources` is accepted as a fallback for rows written by the older prompt.
+    raw_sources = payload.get("news_sources")
+    if raw_sources is None:
+        raw_sources = payload.get("sources")
+    sources, dropped = _validate_sources(raw_sources, window_start, window_end)
     if dropped:
         logger.info(
             "Dropped %s unusable source(s) for %s", dropped, result.currency_code

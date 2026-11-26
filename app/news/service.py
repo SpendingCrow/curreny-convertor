@@ -26,6 +26,7 @@ from .constants import (
 )
 from .models import CurrencyInsight, NewsSource
 from .openai_client import InsightGenerationError, generate_insight
+from .prompts import PROMPT_VERSION
 from .schema import (
     NewsFeedGroup,
     NewsInsightOut,
@@ -58,8 +59,15 @@ async def generate_and_store(
     code: str,
     days: int | None = None,
     force: bool = False,
-) -> CurrencyInsight:
-    """Generate one insight and save it. Replaces today's row when `force`."""
+) -> tuple[CurrencyInsight, bool]:
+    """Generate one insight and save it. Replaces today's row when `force`.
+
+    Returns `(insight, generated)`. `generated` is False when today's card
+    already existed and was kept, which the caller cannot infer from
+    `created_at`: that column defaults to Postgres `now()`, which is the
+    *transaction* timestamp, and the session's transaction opens before the
+    caller starts timing.
+    """
     code = (code or "").strip().upper()
     if not is_supported(code):
         raise ValueError(
@@ -81,8 +89,24 @@ async def generate_and_store(
     ).scalar_one_or_none()
 
     if existing and not force:
-        logger.info("%s already has an insight for %s; skipping.", code, insight_date)
-        return existing
+        # A prompt bump does not regenerate on its own: that would re-spend on
+        # every currency the moment the constant changes. Flagged here so a
+        # stale-version row is visible in the logs. Rewriting it takes
+        # force=True, which is what POST /news-history/refresh does when it is
+        # given a single currency_code.
+        if (existing.prompt_version or 1) != PROMPT_VERSION:
+            logger.info(
+                "%s already has an insight for %s, written by prompt v%s "
+                "(current is v%s); skipping. Regenerate it with POST "
+                "/news-history/refresh?currency_code=%s.",
+                code, insight_date, existing.prompt_version or 1,
+                PROMPT_VERSION, code,
+            )
+        else:
+            logger.info(
+                "%s already has an insight for %s; skipping.", code, insight_date
+            )
+        return existing, False
 
     result = await compute_trend(db, code, window_start, window_end)
 
@@ -93,6 +117,30 @@ async def generate_and_store(
         )
 
     draft = await generate_insight(result, days)
+
+    # Re-read before writing. The call above takes a minute or more, and the
+    # daily job may have stored this very card while we waited — the row we
+    # checked at the top is not evidence of anything by now. Without this the
+    # INSERT collides with uq_insight_currency_date and the caller gets a 500
+    # after the call has already been paid for.
+    existing = (
+        await db.execute(
+            select(CurrencyInsight).where(
+                CurrencyInsight.currency_code == code,
+                CurrencyInsight.insight_date == insight_date,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing and not force:
+        # Another generator got there first. Keep its card rather than
+        # overwrite it: whoever asked for this one did not ask to replace.
+        logger.info(
+            "%s: an insight for %s was stored while we were generating; "
+            "keeping the stored one.",
+            code, insight_date,
+        )
+        return existing, False
 
     if existing:
         # Cascade clears the old sources with it.
@@ -105,6 +153,7 @@ async def generate_and_store(
         currency_code=code,
         insight_date=insight_date,
         change_percent=result.change_percent,
+        prompt_version=PROMPT_VERSION,
         title=draft.title,
         category=draft.category,
         sentiment=draft.sentiment,
@@ -113,6 +162,7 @@ async def generate_and_store(
     )
     insight.sources = [
         NewsSource(
+            source_number=s.source_number,
             headline=s.headline,
             publisher=s.publisher,
             source_url=s.source_url,
@@ -126,16 +176,16 @@ async def generate_and_store(
     await db.refresh(insight)
 
     logger.info(
-        "%s insight stored (%s, %s%%, %s source(s))",
-        code, result.trend,
+        "%s insight stored (prompt v%s, %s, %s%%, %s source(s))",
+        code, PROMPT_VERSION, result.trend,
         result.change_percent if result.change_percent is not None else "n/a",
         len(draft.sources),
     )
-    return insight
+    return insight, True
 
 
 async def run_daily_generation(db: AsyncSession, days: int | None = None) -> dict:
-    """Generate insights for all 19 currencies plus the USD commentary card.
+    """Generate an insight for every asset in ALL_SUBJECTS, USD included.
 
     One failure never stops the rest — each subject is independent.
     """
@@ -144,14 +194,11 @@ async def run_daily_generation(db: AsyncSession, days: int | None = None) -> dic
 
     for code in ALL_SUBJECTS:
         try:
-            before = _now()
-            insight = await generate_and_store(db, code, days=days)
-            if insight.created_at and insight.created_at.replace(
-                tzinfo=insight.created_at.tzinfo or timezone.utc
-            ) < before:
-                skipped += 1
-            else:
+            _, generated = await generate_and_store(db, code, days=days)
+            if generated:
                 created += 1
+            else:
+                skipped += 1
         except Exception as exc:
             await db.rollback()
             failed.append(code)
@@ -200,6 +247,7 @@ async def _to_out(
         currency_name=name,
         asset_type=asset_type.value,
         quote_currency=BASE_CURRENCY,
+        prompt_version=insight.prompt_version or 1,
         title=insight.title,
         category=insight.category,
         sentiment=insight.sentiment,
@@ -217,6 +265,7 @@ async def _to_out(
         created_at=insight.created_at,
         sources=[
             NewsSourceOut(
+                source_number=s.source_number,
                 headline=s.headline,
                 publisher=s.publisher,
                 source_url=s.source_url,
